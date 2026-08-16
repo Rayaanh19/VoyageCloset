@@ -1,0 +1,58 @@
+{
+  "expo": {
+    "name": "VoyageCloset",
+    "slug": "voyage-closet",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "scheme": "com.mywardrobe.app",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mywardrobe.app"
+    },
+    "android": {
+      "package": "com.mywardrobe.app",
+      "adaptiveIcon": {
+        "backgroundColor": "#4F46E5",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "output": "single",
+      "favicon": "./assets/images/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 250,
+          "resizeMode": "contain",
+          "backgroundColor": "#000000",
+          "dark": {
+            "backgroundColor": "#000000"
+          }
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Allow VoyageCloset to access your photos to add clothing items to your wardrobe.",
+          "cameraPermission": "Allow VoyageCloset to use your camera to capture clothing items."
+        }
+      ],
+      "expo-web-browser",
+      "expo-font",
+      "expo-router"
+    ],
+    "experiments": {
+      "reactCompiler": true
+    }
+  }
+}
