@@ -139,8 +139,8 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
     let apiPromise;
 
     if (geminiKey) {
-      console.log(`[AURA] Sending request to Gemini 3.5 Flash Lite Model...`);
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiKey}`;
+      console.log(`[AURA] Sending request to Gemini 3.6 Flash Model...`);
+      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
       apiPromise = fetch(geminiUrl, {
         method: "POST",
         headers: {
@@ -745,7 +745,7 @@ Return ONLY a raw, valid JSON array containing the objects with the following sc
     newly_added: index < 3 && items.length > 3
   }));
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
 
   try {
     const res = await fetch(geminiUrl, {
@@ -936,7 +936,7 @@ Return ONLY a raw, valid JSON object with the following schema:
 }
 `;
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
   try {
     const res = await fetch(geminiUrl, {
       method: "POST",
@@ -1047,7 +1047,7 @@ Return ONLY a raw, valid JSON object with the following schema:
 }
 `;
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key=${geminiKey}`;
+  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
   
   const res = await fetch(geminiUrl, {
     method: "POST",

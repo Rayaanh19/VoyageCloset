@@ -355,7 +355,7 @@ export default function TravelPackScreen() {
   const [isDocBagOpen, setIsDocBagOpen] = useState(false);
   const [isDocBagModalVisible, setIsDocBagModalVisible] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
-  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // UI/UX Animations
   const pouchScaleAnim = useRef(new Animated.Value(1)).current;
@@ -1613,7 +1613,7 @@ const styles = StyleSheet.create({
     alignItems: "center",
   },
   modalDismissArea: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
   },
   modalCardContainer: {
     width: "85%",

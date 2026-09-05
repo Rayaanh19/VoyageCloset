@@ -19,7 +19,6 @@ export const getCommonScreenOptions = ({
 }: ScreenOptionsParams): NativeStackNavigationOptions => ({
   headerTitleAlign: "center",
   headerTransparent: transparent,
-  headerBlurEffect: isDark ? "dark" : "light",
   headerTintColor: theme.text,
   headerStyle: {
     backgroundColor: Platform.select({
