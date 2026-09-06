@@ -1,6 +1,18 @@
 import { Category, Gender, Occasion, Season, ClothingItem } from "@/types/ClothingItem";
-import * as FileSystem from "expo-file-system/legacy";
-import * as ImageManipulator from "expo-image-manipulator";
+
+let ImageManipulator: any = null;
+try {
+  ImageManipulator = require("expo-image-manipulator");
+} catch (e) {
+  /* optional on web/node */
+}
+
+let FileSystem: any = null;
+try {
+  FileSystem = require("expo-file-system/legacy");
+} catch (e) {
+  /* optional on web/node */
+}
 
 export interface AIClassificationResult {
   name: string;
@@ -96,7 +108,7 @@ async function callGeminiFlash(
   parts: any[],
   responseMimeType = "application/json"
 ): Promise<string> {
-  const models = ["gemini-2.5-flash", "gemini-1.5-flash"];
+  const models = ["gemini-3.5-flash", "gemini-3.6-flash", "gemini-flash-latest"];
   let lastError: Error | null = null;
 
   for (const model of models) {
@@ -146,7 +158,7 @@ export async function classifyClothingItem(imageUri: string, initialCategory?: C
     }
   }
 
-  if (!base64Image) {
+  if (!base64Image && ImageManipulator && typeof ImageManipulator.manipulateAsync === "function") {
     try {
       const manipResult = await ImageManipulator.manipulateAsync(
         imageUri,
