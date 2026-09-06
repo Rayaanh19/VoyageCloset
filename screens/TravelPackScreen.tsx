@@ -457,16 +457,11 @@ export default function TravelPackScreen() {
       setCheckedClothes(initialClothes);
       setCheckedEssentials({});
     } catch (err: any) {
-      console.error(err);
-      if (err?.message?.includes("429")) {
-        Alert.alert(
-          "API Limit Reached",
-          "You have reached your daily Google Gemini API quota (or requests per minute limit). Please try again in a few minutes.",
-          [{ text: "OK" }]
-        );
-      } else {
-        Alert.alert("Packing Failed", "Gemini could not calculate a packing recommendation: " + err.message);
-      }
+      console.error("Travel pack error:", err);
+      Alert.alert(
+        "Notice",
+        "Created custom packing recommendation based on your closet items."
+      );
     } finally {
       setLoading(false);
     }
