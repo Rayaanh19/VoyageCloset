@@ -31,11 +31,9 @@ const COLOR_MAP: { [key: string]: string } = {
 function cleanJsonString(str: string): string {
   let cleaned = str.trim();
 
-  // Find if it's an array or an object
   const firstBrace = cleaned.indexOf("{");
   const firstBracket = cleaned.indexOf("[");
 
-  // Determine if it should be parsed as an array or object based on which comes first
   const isArray = firstBracket !== -1 && (firstBrace === -1 || firstBracket < firstBrace);
   const startChar = isArray ? "[" : "{";
   const endChar = isArray ? "]" : "}";
@@ -90,29 +88,83 @@ function cleanJsonString(str: string): string {
   return cleaned.trim();
 }
 
+/**
+ * Helper to call Gemini Flash API with fallback endpoints (gemini-2.5-flash -> gemini-1.5-flash)
+ */
+async function callGeminiFlash(
+  geminiKey: string,
+  parts: any[],
+  responseMimeType = "application/json"
+): Promise<string> {
+  const models = ["gemini-2.5-flash", "gemini-1.5-flash"];
+  let lastError: Error | null = null;
+
+  for (const model of models) {
+    try {
+      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${geminiKey}`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts }],
+          generationConfig: { responseMimeType },
+        }),
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Gemini API error (${model}): ${res.status} - ${errText}`);
+      }
+
+      const data = await res.json();
+      const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text) return text;
+    } catch (err: any) {
+      console.warn(`[GEMINI] Model ${model} call failed:`, err.message);
+      lastError = err;
+    }
+  }
+
+  throw lastError || new Error("All Gemini Flash models failed.");
+}
+
 export async function classifyClothingItem(imageUri: string, initialCategory?: Category): Promise<AIClassificationResult> {
   const filename = imageUri.split("/").pop() || "";
   const lowerName = filename.toLowerCase();
 
-  console.log(`[AURA] Starting classification for: ${filename}`);
+  console.log(`[AURA] Starting classification...`);
 
-  // Try Multimodal LLM Vision API first with strict JSON output as requested by user
-  try {
-    console.log(`[AURA] Resizing and compressing image...`);
-    const manipResult = await ImageManipulator.manipulateAsync(
-      imageUri,
-      [{ resize: { width: 800 } }],
-      { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true }
-    );
-    const base64Image = manipResult.base64 || "";
-    
-    const fileExtension = filename.split(".").pop()?.toLowerCase();
-    const mimeType = fileExtension === "png" ? "image/png" : "image/jpeg";
-    const imageUrl = `data:${mimeType};base64,${base64Image}`;
-    
-    console.log(`[AURA] Image resized and compressed. Base64 length: ${base64Image.length} characters (~${Math.round(base64Image.length / 1024)} KB)`);
+  // Extract base64 image data
+  let base64Image = "";
+  let mimeType = "image/jpeg";
 
-    const systemPrompt = `You are an expert fashion classification AI built for a virtual wardrobe application. Your task is to analyze an uploaded image of a clothing item or accessory and return highly accurate, structured metadata about it.
+  if (imageUri.startsWith("data:")) {
+    const matches = imageUri.match(/^data:(image\/[a-zA-Z]+);base64,(.+)$/);
+    if (matches) {
+      mimeType = matches[1];
+      base64Image = matches[2];
+    }
+  }
+
+  if (!base64Image) {
+    try {
+      const manipResult = await ImageManipulator.manipulateAsync(
+        imageUri,
+        [{ resize: { width: 800 } }],
+        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      base64Image = manipResult.base64 || "";
+    } catch (e) {
+      console.warn("[AURA] ImageManipulator failed for URI", e);
+    }
+  }
+
+  // 1. Try Gemini Vision API first
+  const geminiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY?.trim();
+  if (geminiKey && base64Image) {
+    try {
+      console.log(`[AURA] Sending request to Gemini Vision API...`);
+      const systemPrompt = `You are an expert fashion classification AI built for a virtual wardrobe application. Your task is to analyze an uploaded image of a clothing item or accessory and return highly accurate, structured metadata about it.
 
 Analyze the provided image and extract the following information:
 1. Category: Broad classification (Top, Bottom, Outerwear, Footwear, Accessory, Full Body).
@@ -123,7 +175,7 @@ Analyze the provided image and extract the following information:
 6. Secondary Colors: A list of any other notable colors in the pattern or detailing (keep empty if solid).
 
 OUTPUT FORMAT:
-You must respond ONLY with a raw, valid JSON object. Do not include markdown formatting (like \`\`\`json), conversational text, or explanations. Use the exact keys shown below:
+You must respond ONLY with a raw, valid JSON object. Do not include markdown formatting, conversational text, or explanations. Use the exact keys shown below:
 {
   "category": "",
   "sub_category": "",
@@ -135,163 +187,89 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
   "short_description": ""
 }`;
 
-    const geminiKey = process.env.EXPO_PUBLIC_GEMINI_API_KEY?.trim();
-    let apiPromise;
-
-    if (geminiKey) {
-      console.log(`[AURA] Sending request to Gemini 3.6 Flash Model...`);
-      const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
-      apiPromise = fetch(geminiUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [
-                { text: systemPrompt },
-                {
-                  inlineData: {
-                    mimeType,
-                    data: base64Image,
-                  },
-                },
-              ],
-            },
-          ],
-          generationConfig: {
-            responseMimeType: "application/json",
-          },
-        }),
-      }).then(async (res) => {
-        console.log(`[AURA] Gemini response received. Status: ${res.status}`);
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Gemini API error: ${res.status} - ${errText}`);
-        }
-        const data = await res.json();
-        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-        return { content: text };
-      });
-    } else {
-      // Fallback to Hugging Face
-      const headers: { [key: string]: string } = {
-        "Content-Type": "application/json",
-      };
-      if (process.env.EXPO_PUBLIC_HF_TOKEN) {
-        headers["Authorization"] = `Bearer ${process.env.EXPO_PUBLIC_HF_TOKEN}`;
-      }
-      apiPromise = fetch(
-        "https://api-inference.huggingface.co/v1/chat/completions",
+      const content = await callGeminiFlash(geminiKey, [
+        { text: systemPrompt },
         {
-          method: "POST",
-          headers,
-          body: JSON.stringify({
-            model: "meta-llama/Llama-3.2-11B-Vision-Instruct",
-            messages: [
-              { role: "system", content: systemPrompt },
-              {
-                role: "user",
-                content: [
-                  { type: "text", text: "Analyze this image and return the JSON data." },
-                  { type: "image_url", image_url: { url: imageUrl } }
-                ]
-              }
-            ],
-            max_tokens: 500,
-          }),
+          inlineData: {
+            mimeType,
+            data: base64Image,
+          },
+        },
+      ]);
+
+      if (content) {
+        const cleanedContent = cleanJsonString(content);
+        console.log("Vision AI strict JSON response:", cleanedContent);
+        const jsonResponse = JSON.parse(cleanedContent);
+
+        const categoryMap: { [key: string]: Category } = {
+          "Top": "Tops",
+          "Bottom": "Bottoms",
+          "Outerwear": "Outerwear",
+          "Footwear": "Shoes",
+          "Accessory": "Accessories",
+          "Full Body": "Tops"
+        };
+        const genderMap: { [key: string]: Gender } = {
+          "Men": "men",
+          "Women": "women",
+          "Unisex": "unisex",
+          "Kids": "unisex"
+        };
+
+        const apiCategory = categoryMap[jsonResponse.category] || initialCategory || "Tops";
+        const apiGender = genderMap[jsonResponse.gender] || "unisex";
+        
+        let primaryColor = jsonResponse.primary_color || "White";
+        let colorsList = [primaryColor];
+        
+        let matchedColor = primaryColor;
+        const lowerColor = matchedColor.toLowerCase();
+        for (const [key, premiumColor] of Object.entries(COLOR_MAP)) {
+          if (lowerColor.includes(key)) {
+            matchedColor = premiumColor;
+            if (key === "black") colorsList = ["Black"];
+            else if (key === "white") colorsList = ["White"];
+            else if (key === "gray" || key === "grey") colorsList = ["Gray"];
+            else if (key === "brown") colorsList = ["Brown"];
+            else if (key === "blue" || key === "navy") colorsList = ["Blue"];
+            else if (key === "red") colorsList = ["Red"];
+            else if (key === "green") colorsList = ["Green"];
+            else if (key === "gold") colorsList = ["Yellow"];
+            else if (key === "silver") colorsList = ["Gray"];
+            break;
+          }
         }
-      ).then(async (res) => {
-        if (!res.ok) {
-          const errText = await res.text();
-          throw new Error(`Hugging Face API error: ${res.status} - ${errText}`);
+
+        const name = `${matchedColor} ${jsonResponse.sub_category || "Item"}`;
+
+        let seasons: Season[] = ["Spring", "Summer"];
+        let occasions: Occasion[] = ["Casual"];
+
+        if (apiCategory === "Outerwear" || name.includes("Sweater") || name.includes("Boots")) {
+          seasons = ["Fall", "Winter"];
+          occasions = ["Work", "Formal"];
+        } else if (name.includes("Watch") || name.includes("Trousers") || name.includes("Loafers")) {
+          seasons = ["Spring", "Summer", "Fall", "Winter"];
+          occasions = ["Work", "Formal"];
         }
-        const data = await res.json();
-        return { content: data.choices?.[0]?.message?.content };
-      });
-    }
 
-    const timeoutPromise = new Promise<never>((_, reject) =>
-      setTimeout(() => reject(new Error("Timeout")), 35000)
-    );
-
-    const apiResult = await Promise.race([apiPromise, timeoutPromise]);
-    const content = apiResult.content;
-
-    if (content) {
-      const cleanedContent = cleanJsonString(content);
-      console.log("Vision AI strict JSON response:", cleanedContent);
-      const jsonResponse = JSON.parse(cleanedContent);
-
-      const categoryMap: { [key: string]: Category } = {
-        "Top": "Tops",
-        "Bottom": "Bottoms",
-        "Outerwear": "Outerwear",
-        "Footwear": "Shoes",
-        "Accessory": "Accessories",
-        "Full Body": "Tops"
-      };
-      const genderMap: { [key: string]: Gender } = {
-        "Men": "men",
-        "Women": "women",
-        "Unisex": "unisex",
-        "Kids": "unisex"
-      };
-
-      const apiCategory = categoryMap[jsonResponse.category] || "Tops";
-      const apiGender = genderMap[jsonResponse.gender] || "unisex";
-      
-      let primaryColor = jsonResponse.primary_color || "White";
-      let colorsList = [primaryColor];
-      
-      // Map to premium color names
-      let matchedColor = primaryColor;
-      const lowerColor = matchedColor.toLowerCase();
-      for (const [key, premiumColor] of Object.entries(COLOR_MAP)) {
-        if (lowerColor.includes(key)) {
-          matchedColor = premiumColor;
-          if (key === "black") colorsList = ["Black"];
-          else if (key === "white") colorsList = ["White"];
-          else if (key === "gray" || key === "grey") colorsList = ["Gray"];
-          else if (key === "brown") colorsList = ["Brown"];
-          else if (key === "blue" || key === "navy") colorsList = ["Blue"];
-          else if (key === "red") colorsList = ["Red"];
-          else if (key === "green") colorsList = ["Green"];
-          else if (key === "gold") colorsList = ["Yellow"];
-          else if (key === "silver") colorsList = ["Gray"];
-          break;
-        }
+        return {
+          name,
+          category: apiCategory,
+          colors: colorsList,
+          seasons,
+          occasions,
+          gender: apiGender,
+          source: "cloud",
+        };
       }
-
-      const name = `${matchedColor} ${jsonResponse.sub_category || "Item"}`;
-
-      let seasons: Season[] = ["Spring", "Summer"];
-      let occasions: Occasion[] = ["Casual"];
-
-      if (apiCategory === "Outerwear" || name.includes("Sweater") || name.includes("Boots")) {
-        seasons = ["Fall", "Winter"];
-        occasions = ["Work", "Formal"];
-      } else if (name.includes("Watch") || name.includes("Trousers") || name.includes("Loafers")) {
-        seasons = ["Spring", "Summer", "Fall", "Winter"];
-        occasions = ["Work", "Formal"];
-      }
-
-      return {
-        name,
-        category: apiCategory,
-        colors: colorsList,
-        seasons,
-        occasions,
-        gender: apiGender,
-        source: "cloud",
-      };
+    } catch (apiError: any) {
+      console.warn("Vision AI connection failed or timed out. Trying secondary model:", apiError.message);
     }
-  } catch (apiError: any) {
-    console.log("Vision AI connection failed or timed out. Trying secondary model:", apiError.message);
   }
 
-  // Secondary Backup: BLIP captioning model
+  // 2. Secondary Backup: BLIP captioning model via standard fetch (works on Web & Native)
   try {
     const blipHeaders: { [key: string]: string } = {
       "Content-Type": "image/jpeg",
@@ -300,15 +278,28 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
       blipHeaders["Authorization"] = `Bearer ${process.env.EXPO_PUBLIC_HF_TOKEN}`;
     }
 
-    const uploadPromise = FileSystem.uploadAsync(
+    let bodyData: ArrayBuffer | null = null;
+    if (base64Image) {
+      const binary = atob(base64Image);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      bodyData = bytes.buffer;
+    } else {
+      const res = await fetch(imageUri);
+      bodyData = await res.arrayBuffer();
+    }
+
+    const uploadPromise = fetch(
       "https://api-inference.huggingface.co/models/Salesforce/blip-image-captioning-base",
-      imageUri,
       {
-        httpMethod: "POST",
-        uploadType: 0 as any, // 0 corresponds to BINARY_CONTENT
-        headers: blipHeaders as any,
+        method: "POST",
+        headers: blipHeaders,
+        body: bodyData,
       }
-    );
+    ).then(async (res) => {
+      const bodyText = await res.text();
+      return { status: res.status, body: bodyText };
+    });
 
     const timeoutPromise = new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error("Timeout")), 10000)
@@ -329,7 +320,6 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
         let detectedCategory: Category | null = null;
         let itemNoun = "";
 
-        // 1. Parse Category from Caption
         if (
           caption.includes("watch") || 
           caption.includes("clock") || 
@@ -421,7 +411,6 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
           let colorsList = ["White"];
           let colorFound = false;
 
-          // Try to extract color from caption first
           for (const [key, premiumColor] of Object.entries(COLOR_MAP)) {
             if (caption.includes(key)) {
               matchedColor = premiumColor;
@@ -439,7 +428,6 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
             }
           }
 
-          // Fallback to filename keyword matching if color not in caption
           if (!colorFound) {
             for (const [key, premiumColor] of Object.entries(COLOR_MAP)) {
               if (lowerName.includes(key)) {
@@ -459,7 +447,6 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
             }
           }
 
-          // Smart category default fallbacks if color still unrecognized
           if (!colorFound) {
             if (detectedCategory === "Bottoms" || detectedCategory === "Shoes") {
               matchedColor = "Obsidian";
@@ -482,7 +469,6 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
             occasions = ["Work", "Formal"];
           }
 
-          // Parse Gender from Caption
           let detectedGender: Gender = "unisex";
           if (
             caption.includes("man ") || 
@@ -516,13 +502,10 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
       }
     }
   } catch (blipError: any) {
-    console.log("AURA secondary BLIP model failed/timed out:", blipError.message);
+    console.warn("AURA secondary BLIP model failed/timed out:", blipError.message);
   }
 
-  // Simulate AI Model Processing Network Delay if we fallback
-  await new Promise((resolve) => setTimeout(resolve, 400));
-
-  // 1. Detect Category
+  // 3. Smart Local Fallback
   let category: Category = initialCategory || "Tops";
   if (
     lowerName.includes("shirt") ||
@@ -578,14 +561,12 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
     category = "Accessories";
   }
 
-  // 2. Detect Color
-  let matchedColor = "Alabaster"; // Default premium neutral
+  let matchedColor = "Alabaster";
   let colorsList: string[] = ["White"];
 
   for (const [key, premiumColor] of Object.entries(COLOR_MAP)) {
     if (lowerName.includes(key)) {
       matchedColor = premiumColor;
-      // Convert to matches in list
       if (key === "black") colorsList = ["Black"];
       else if (key === "white") colorsList = ["White"];
       else if (key === "gray" || key === "grey") colorsList = ["Gray"];
@@ -595,91 +576,29 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
       else if (key === "green") colorsList = ["Green"];
       else if (key === "gold") colorsList = ["Yellow"];
       else if (key === "silver") colorsList = ["Gray"];
-      else colorsList = ["White"];
       break;
     }
   }
 
-  // 3. Generate High-End Editorial Name
   let name = "";
   if (category === "Tops") {
-    if (lowerName.includes("sweater") || lowerName.includes("knit")) {
-      name = `${matchedColor} Knit Sweater`;
-    } else if (lowerName.includes("tee") || lowerName.includes("tshirt")) {
-      name = `${matchedColor} Cotton Tee`;
-    } else if (lowerName.includes("hoodie")) {
-      name = `${matchedColor} Minimalist Hoodie`;
-    } else {
-      name = `${matchedColor} Structured Shirt`;
-    }
+    name = `${matchedColor} Structured Shirt`;
   } else if (category === "Bottoms") {
-    if (lowerName.includes("jeans") || lowerName.includes("denim")) {
-      name = `${matchedColor} Denim Jeans`;
-    } else if (lowerName.includes("shorts")) {
-      name = `${matchedColor} Tailored Shorts`;
-    } else {
-      name = `${matchedColor} Slim Chinos`;
-    }
+    name = `${matchedColor} Slim Chinos`;
   } else if (category === "Outerwear") {
-    if (lowerName.includes("blazer")) {
-      name = `${matchedColor} Fitted Blazer`;
-    } else if (lowerName.includes("trench")) {
-      name = `${matchedColor} Classic Trenchcoat`;
-    } else {
-      name = `${matchedColor} Modern Overcoat`;
-    }
+    name = `${matchedColor} Modern Overcoat`;
   } else if (category === "Shoes") {
-    if (lowerName.includes("sneaker")) {
-      name = `${matchedColor} Essential Sneakers`;
-    } else if (lowerName.includes("boot")) {
-      name = `${matchedColor} Leather Boots`;
-    } else {
-      name = `${matchedColor} Classic Loafers`;
-    }
+    name = `${matchedColor} Classic Loafers`;
   } else {
-    // Accessories
-    if (lowerName.includes("watch")) {
-      name = `${matchedColor} Chronograph Watch`;
-    } else if (lowerName.includes("glasses") || lowerName.includes("sunglasses")) {
-      name = `${matchedColor} Editorial Sunglasses`;
-    } else if (lowerName.includes("bag")) {
-      name = `${matchedColor} Leather Tote Bag`;
-    } else {
-      name = `${matchedColor} Fine Accessory`;
-    }
+    name = `${matchedColor} Fine Accessory`;
   }
 
-  // 4. Seasons & Occasions Heuristics
   let seasons: Season[] = ["Spring", "Summer"];
   let occasions: Occasion[] = ["Casual"];
 
-  if (category === "Outerwear" || lowerName.includes("sweater") || lowerName.includes("boot")) {
+  if (category === "Outerwear") {
     seasons = ["Fall", "Winter"];
     occasions = ["Work", "Formal"];
-  } else if (lowerName.includes("blazer") || lowerName.includes("watch") || lowerName.includes("loafer") || lowerName.includes("trousers")) {
-    seasons = ["Spring", "Summer", "Fall", "Winter"];
-    occasions = ["Work", "Formal"];
-  } else if (lowerName.includes("sport") || lowerName.includes("active") || lowerName.includes("sneaker") || lowerName.includes("shorts")) {
-    occasions = ["Casual", "Sport"];
-  }
-
-  // 5. Detect Gender
-  let gender: Gender = "unisex";
-  if (
-    lowerName.includes("men") ||
-    lowerName.includes("man") ||
-    lowerName.includes("male") ||
-    lowerName.includes("boy")
-  ) {
-    gender = "men";
-  } else if (
-    lowerName.includes("women") ||
-    lowerName.includes("woman") ||
-    lowerName.includes("female") ||
-    lowerName.includes("girl") ||
-    lowerName.includes("lady")
-  ) {
-    gender = "women";
   }
 
   return {
@@ -688,7 +607,7 @@ You must respond ONLY with a raw, valid JSON object. Do not include markdown for
     colors: colorsList,
     seasons,
     occasions,
-    gender,
+    gender: "unisex",
     source: "local",
   };
 }
@@ -708,11 +627,11 @@ export async function generateAIOutfits(items: ClothingItem[]): Promise<AISugges
   const systemPrompt = `You are a professional fashion stylist AI. Your task is to recommend up to 3 unique, stylish outfit combinations based on the user's virtual wardrobe.
 
 Instructions:
-1. Recommed UP TO 3 outfits. If the user has very few items in their wardrobe, only recommend as many unique outfits as can be logically constructed (e.g., if there is only 1 top and 1 bottom, recommend exactly 1 outfit).
+1. Recommend UP TO 3 outfits. If the user has very few items in their wardrobe, only recommend as many unique outfits as can be logically constructed.
 2. Each outfit MUST consist of:
    - Exactly 1 Top and 1 Bottom (required)
    - Optionally 1 Shoes item and/or 1 Accessories item and/or 1 Outerwear item (if available in the list).
-3. CRITICAL: Items labeled with "newly_added": true are recently added to the user's wardrobe. You MUST prioritize creating outfits that include these newly added items. Each suggested outfit should ideally feature at least one of these new items so the user gets styling ideas for their new clothes!
+3. CRITICAL: Items labeled with "newly_added": true are recently added to the user's wardrobe. You MUST prioritize creating outfits that include these newly added items.
 4. CRITICAL: Only use the exact IDs of the items provided in the list. Do not invent new item IDs under any circumstances.
 5. For each outfit, provide:
    - "name": A stylish name for the outfit.
@@ -720,16 +639,15 @@ Instructions:
    - "reasoning": A detailed explanation of why this outfit works, focusing on color coordination, style synergy, and suitability.
 
 OUTPUT FORMAT:
-Return ONLY a raw, valid JSON array containing the objects with the following schema (return an empty array [] if no logical combination can be made):
+Return ONLY a raw, valid JSON array containing the objects with the following schema:
 [
   {
     "name": "Outfit Name",
-    "itemIds": ["id1", "id2", ...],
+    "itemIds": ["id1", "id2"],
     "reasoning": "Stylist explanation."
   }
 ]`;
 
-  // Sort items by dateAdded descending (most recent first)
   const sortedItems = [...items].sort((a, b) => {
     const timeA = a.dateAdded ? new Date(a.dateAdded).getTime() : 0;
     const timeB = b.dateAdded ? new Date(b.dateAdded).getTime() : 0;
@@ -745,46 +663,13 @@ Return ONLY a raw, valid JSON array containing the objects with the following sc
     newly_added: index < 3 && items.length > 3
   }));
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
-
   try {
-    const res = await fetch(geminiUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: systemPrompt },
-              { text: `Here is the list of available clothing items:\n${JSON.stringify(itemsContext, null, 2)}` }
-            ],
-          },
-        ],
-        generationConfig: {
-          responseMimeType: "application/json",
-        },
-      }),
-    });
-
-    if (!res.ok) {
-      const errText = await res.text();
-      throw new Error(`Gemini API error: ${res.status} - ${errText}`);
-    }
-
-    const data = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    
-    if (!text) {
-      throw new Error("Empty response from Gemini API");
-    }
-
-    console.log("[AURA STYLIST] Items payload sent to Gemini:", JSON.stringify(itemsContext, null, 2));
-    console.log("[AURA STYLIST] Raw JSON response from Gemini:", text);
+    const text = await callGeminiFlash(geminiKey, [
+      { text: systemPrompt },
+      { text: `Here is the list of available clothing items:\n${JSON.stringify(itemsContext, null, 2)}` }
+    ]);
 
     const cleanedContent = cleanJsonString(text);
-    console.log("[AURA STYLIST] Gemini response parsed successfully.");
     const parsed = JSON.parse(cleanedContent);
 
     if (Array.isArray(parsed)) {
@@ -797,7 +682,6 @@ Return ONLY a raw, valid JSON array containing the objects with the following sc
         return (parsed as any).suggestions as AISuggestedOutfit[];
       }
     }
-    console.warn("[AURA STYLIST] Parsed JSON is not an array:", parsed);
     return [];
   } catch (err: any) {
     console.error("AI Stylist error:", err);
@@ -812,11 +696,35 @@ export async function removeBackground(uri: string): Promise<string | null> {
     return null;
   }
 
-  console.log("[BACKGROUND REMOVAL] Starting background removal using Remove.bg for:", uri);
+  console.log("[BACKGROUND REMOVAL] Starting background removal using Remove.bg for URI");
   try {
-    const base64Image = await FileSystem.readAsStringAsync(uri, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
+    let base64Image = "";
+    if (uri.startsWith("data:")) {
+      base64Image = uri.split(",")[1];
+    } else {
+      try {
+        base64Image = await FileSystem.readAsStringAsync(uri, {
+          encoding: FileSystem.EncodingType.Base64,
+        });
+      } catch (e) {
+        const response = await fetch(uri);
+        const blob = await response.blob();
+        base64Image = await new Promise<string>((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onloadend = () => {
+            const res = reader.result as string;
+            resolve(res.split(",")[1] || "");
+          };
+          reader.onerror = reject;
+          reader.readAsDataURL(blob);
+        });
+      }
+    }
+
+    if (!base64Image) {
+      console.warn("[BACKGROUND REMOVAL] Could not obtain base64 image data.");
+      return null;
+    }
 
     const response = await fetch("https://api.remove.bg/v1.0/removebg", {
       method: "POST",
@@ -839,14 +747,9 @@ export async function removeBackground(uri: string): Promise<string | null> {
 
     const arrayBuffer = await response.arrayBuffer();
     const outputBase64 = base64ArrayBuffer(arrayBuffer);
+    const transparentUri = `data:image/png;base64,${outputBase64}`;
 
-    // Overwrite the file or create a transparent version
-    const transparentUri = uri.replace(/\.[^/.]+$/, "") + "_transparent.png";
-    await FileSystem.writeAsStringAsync(transparentUri, outputBase64, {
-      encoding: FileSystem.EncodingType.Base64,
-    });
-
-    console.log("[BACKGROUND REMOVAL] Background removed and written to:", transparentUri);
+    console.log("[BACKGROUND REMOVAL] Background removed successfully!");
     return transparentUri;
   } catch (error) {
     console.error("[BACKGROUND REMOVAL] Failed:", error);
@@ -923,7 +826,7 @@ Instructions:
 1. Generate a realistic temperature in Celsius (e.g., "22°C" or "15°C") based on the current season/month.
 2. Select a suitable weather condition (e.g., "Sunny", "Partly Cloudy", "Rainy", "Windy", "Cool").
 3. Map the condition to one of these Feather icon names: "sun", "cloud", "cloud-rain", "wind", "thermometer".
-4. Provide a personalized styling tip (maximum 2 sentences) that refers to actual items from the user's wardrobe (e.g., if they have a "Charcoal Pea Coat", suggest layering it).
+4. Provide a personalized styling tip (maximum 2 sentences) that refers to actual items from the user's wardrobe.
 5. Do not invent items they don't have.
 
 OUTPUT FORMAT:
@@ -936,29 +839,11 @@ Return ONLY a raw, valid JSON object with the following schema:
 }
 `;
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
   try {
-    const res = await fetch(geminiUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [
-          {
-            parts: [
-              { text: systemPrompt },
-              { text: `Here are some items from the user's closet:\n${JSON.stringify(itemsContext, null, 2)}` }
-            ]
-          }
-        ],
-        generationConfig: { responseMimeType: "application/json" }
-      })
-    });
-
-    if (!res.ok) throw new Error("API failed");
-    const data = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-    if (!text) throw new Error("Empty text");
-
+    const text = await callGeminiFlash(geminiKey, [
+      { text: systemPrompt },
+      { text: `Here are some items from the user's closet:\n${JSON.stringify(itemsContext, null, 2)}` }
+    ]);
     const cleaned = cleanJsonString(text);
     return JSON.parse(cleaned) as AIWeatherRecommend;
   } catch (error) {
@@ -1047,33 +932,14 @@ Return ONLY a raw, valid JSON object with the following schema:
 }
 `;
 
-  const geminiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent?key=${geminiKey}`;
-  
-  const res = await fetch(geminiUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [
-        {
-          parts: [
-            { text: systemPrompt },
-            { text: `Here are the items in the user's wardrobe:\n${JSON.stringify(itemsPayload, null, 2)}` }
-          ]
-        }
-      ],
-      generationConfig: { responseMimeType: "application/json" }
-    })
-  });
-
-  if (!res.ok) {
-    const errText = await res.text();
-    throw new Error(`Gemini API error: ${res.status} - ${errText}`);
+  try {
+    const text = await callGeminiFlash(geminiKey, [
+      { text: systemPrompt },
+      { text: `Here are the items in the user's wardrobe:\n${JSON.stringify(itemsPayload, null, 2)}` }
+    ]);
+    const cleaned = cleanJsonString(text);
+    return JSON.parse(cleaned) as AIPackingResult;
+  } catch (err: any) {
+    throw new Error("Gemini API error: " + err.message);
   }
-
-  const data = await res.json();
-  const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
-  if (!text) throw new Error("No suggestion returned from Gemini.");
-
-  const cleaned = cleanJsonString(text);
-  return JSON.parse(cleaned) as AIPackingResult;
 }
