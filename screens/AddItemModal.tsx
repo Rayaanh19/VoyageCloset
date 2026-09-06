@@ -7,6 +7,7 @@ import { useNavigation, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
 import type { RouteProp } from "@react-navigation/native";
 import * as FileSystem from "expo-file-system/legacy";
+import * as ImageManipulator from "expo-image-manipulator";
 import * as ImagePicker from "expo-image-picker";
 import { Alert, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -35,24 +36,6 @@ export default function AddItemModal() {
     return true;
   };
 
-  const getPersistentDirectory = () => {
-    try {
-      const { Paths } = require("expo-file-system");
-      if (Paths && Paths.document && Paths.document.uri) {
-        const base = Paths.document.uri;
-        return base.endsWith("/") ? base : `${base}/`;
-      }
-    } catch (e) {
-      console.warn("Paths API not available, falling back to legacy documentDirectory", e);
-    }
-
-    const dir = (FileSystem as any).documentDirectory as string | null | undefined;
-    if (!dir) {
-      throw new Error("No persistent file directory available");
-    }
-    return dir;
-  };
-
   const requestGalleryPermission = async () => {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== "granted") {
@@ -63,6 +46,22 @@ export default function AddItemModal() {
       return false;
     }
     return true;
+  };
+
+  const preparePersistentImage = async (uri: string): Promise<string> => {
+    try {
+      const manipResult = await ImageManipulator.manipulateAsync(
+        uri,
+        [{ resize: { width: 600 } }],
+        { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true }
+      );
+      if (manipResult.base64) {
+        return `data:image/jpeg;base64,${manipResult.base64}`;
+      }
+    } catch (error) {
+      console.warn("Failed to compress image into Base64 data URL:", error);
+    }
+    return uri;
   };
 
   const handleTakePhoto = async () => {
@@ -91,29 +90,12 @@ export default function AddItemModal() {
       mediaTypes: ["images"],
       allowsEditing: true,
       aspect: [3, 4],
-      quality: 0.3,
+      quality: 0.5,
     });
 
     if (!result.canceled && result.assets && result.assets[0]) {
       const originalUri = result.assets[0].uri;
-      let finalUri = originalUri;
-
-      try {
-        const pickedAsset = result.assets[0];
-        const filename =
-          pickedAsset.fileName ||
-          originalUri.split("/").pop() ||
-          `item-${Date.now()}.jpg`;
-        const destUri = getPersistentDirectory() + filename;
-        await FileSystem.copyAsync({ from: originalUri, to: destUri });
-        finalUri = destUri;
-      } catch (error) {
-        console.error("Failed to persist image", error);
-        Alert.alert(
-          "Image Error",
-          "Could not save the image to storage, but you can still continue.",
-        );
-      }
+      const finalUri = await preparePersistentImage(originalUri);
 
       navigation.replace("ItemDetailsForm", {
         imageUri: finalUri,
@@ -148,29 +130,12 @@ export default function AddItemModal() {
       mediaTypes: ["images"],
       allowsEditing: true,
       aspect: [3, 4],
-      quality: 0.3,
+      quality: 0.5,
     });
 
     if (!result.canceled && result.assets && result.assets[0]) {
       const originalUri = result.assets[0].uri;
-      let finalUri = originalUri;
-
-      try {
-        const pickedAsset = result.assets[0];
-        const filename =
-          pickedAsset.fileName ||
-          originalUri.split("/").pop() ||
-          `item-${Date.now()}.jpg`;
-        const destUri = getPersistentDirectory() + filename;
-        await FileSystem.copyAsync({ from: originalUri, to: destUri });
-        finalUri = destUri;
-      } catch (error) {
-        console.error("Failed to persist image", error);
-        Alert.alert(
-          "Image Error",
-          "Could not save the image to storage, but you can still continue.",
-        );
-      }
+      const finalUri = await preparePersistentImage(originalUri);
 
       navigation.replace("ItemDetailsForm", {
         imageUri: finalUri,
@@ -178,6 +143,8 @@ export default function AddItemModal() {
       });
     }
   };
+
+
 
   return (
     <View
