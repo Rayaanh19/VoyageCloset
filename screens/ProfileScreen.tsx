@@ -69,7 +69,7 @@ export default function ProfileScreen() {
     }
 
     const itemsToMigrate = items.filter(
-      (item) => item.imageUri && !item.imageUri.includes("_transparent.png")
+      (item) => item.imageUri && !item.imageUri.startsWith("data:image/png") && !item.imageUri.includes("_transparent.png")
     );
 
     if (itemsToMigrate.length === 0) {
