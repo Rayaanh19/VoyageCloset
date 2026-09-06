@@ -54,7 +54,7 @@ export function WardrobeProvider({ children }: { children: React.ReactNode }) {
 
     // Filter items that do not have transparent PNGs as their image URIs
     const itemsToMigrate = currentItems.filter(
-      (item) => item.imageUri && !item.imageUri.includes("_transparent.png")
+      (item) => item.imageUri && !item.imageUri.startsWith("data:image/png") && !item.imageUri.includes("_transparent.png")
     );
 
     if (itemsToMigrate.length === 0) return;
